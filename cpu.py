@@ -6,7 +6,8 @@ from amaranth.lib import data
 from amaranth.sim import Simulator
 import os
 import struct
-# from typing import Enum
+
+from codes import Operation
 
 
 class Cpu(am.Elaboratable):
@@ -14,35 +15,38 @@ class Cpu(am.Elaboratable):
         bytes_in_word = int(word_size/8)
 
         # Params
-        self.rom = []
+        self.plain_rom = []
         with open(rom_file, "rb") as ifs:
             ifs.seek(0, os.SEEK_END)
             size = ifs.tell()
             self.rom = data.ArrayLayout(am.unsigned(word_size), size)
+            self.rom_view = data.View(self.rom, am.Signal(word_size * size))
             ifs.seek(0)
             index = 0
             while ifs.tell() != size:
-                self.rom[index] = struct.unpack(f"{bytes_in_word}B", ifs.read(bytes_in_word))[0]
+                self.plain_rom.append(struct.unpack(f"{bytes_in_word}B", ifs.read(bytes_in_word))[0])
                 index += 1
 
-        self.pc = am.Signal(addr_bus_width)
-        self.op = am.Signal(word_size)
-        self.regs = [am.Signal(word_size)] * num_aux_regs
-        self.halted = am.Signal()
+        self.program_counter = am.Signal(addr_bus_width)
+        self.operation = am.Signal(word_size, reset=Operation.NOP)
+        self.input = am.Signal(word_size)
+        self.output = am.Signal(word_size)
+        self.registers = [am.Signal(word_size)] * num_aux_regs
+        self.is_halted = am.Signal()
 
     def elaborate(self, platform: Platform):
         m = am.Module()
 
-        m.d.sync += self.op.eq(self.rom[self.pc])
-        m.d.sync += self.pc.eq(self.pc + 1)
+        for index in range(self.rom.length):
+            m.d.comb += self.rom_view[index].eq(self.plain_rom[index])
 
-        # with m.If(self.pc == )
+        m.d.sync += self.operation.eq(self.rom_view[self.program_counter])
+        m.d.sync += self.program_counter.eq(self.program_counter + 1)
 
-        # m.d.sync += self.regs[0].eq(self.limit)
-        # for index in range(len(self.rom)):
-        #     m.d.sync += self.rom[index]
-
-        m.d.sync += self.halted.eq(True)
+        with m.If(self.operation == Operation.HALT):
+            m.d.sync += self.is_halted.eq(True)
+        with m.Else():
+            m.d.sync += self.is_halted.eq(False)
 
         return m
 
@@ -51,16 +55,18 @@ def test():
     dut = Cpu()
 
     def bench():
-        while not (yield dut.halted):
+        for index in range(dut.rom.length):
+            print(f"{yield dut.rom_view[index]:02X} ", end="")
+
+        while not (yield dut.is_halted):
             yield
-            for index in range(len(dut.rom)):
-                print(f"{yield dut.rom[index]:02X} ", end="")
-            print(f"\npc: {yield dut.pc} op: {yield dut.op}")
+            print(f"\npc: {yield dut.program_counter:02X} op: {yield dut.operation:02X}")
+        print("Program halted")
 
     sim = Simulator(dut)
     sim.add_clock(1e-6)  # 1 MHz
     sim.add_sync_process(bench)
-    with sim.write_vcd("up_counter.vcd"):
+    with sim.write_vcd("cpu.vcd"):
         sim.run()
         print("Tests passed")
 
